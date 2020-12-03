@@ -180,7 +180,7 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
       UBTBTable[UBTBTableFillIndex].callFootPrint = 0xFF;
       UBTBTable[UBTBTableFillIndex].returnFootPrint = 0;
       UBTBTable[UBTBTableFillIndex].LRUHistory = 0;
-      cout << "U-BTB: " << UBTBTableFillIndex << " " << UBTB_TABLE_SIZE << endl;
+      
       UBTBTableFillIndex++;      
       // UBTBTable[i].size = 0; ? how to use the size?
     }
@@ -270,7 +270,7 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
       UBTBTable[UBTBTableFillIndex].callFootPrint = 0xFF;
       UBTBTable[UBTBTableFillIndex].returnFootPrint = 0xFF;
       UBTBTable[UBTBTableFillIndex].LRUHistory = 0;
-      cout << "U-BTB: " << UBTBTableFillIndex << " " << UBTB_TABLE_SIZE << endl;
+      
       UBTBTableFillIndex++;
       
       // UBTBTable[i].size = 0; ? how to use the size?
@@ -318,7 +318,7 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
     bool hasEntry = false;
 
     for (size_t i = 0; i < RIB_TABLE_SIZE; i++)
-    {      
+    {    
       if (RIBTable[i].tag == tagMasked)
       {
         // if the RIB table has the entry, update the corresponding entry
@@ -338,13 +338,12 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
     {      
       // if the table still has space to fill in the new entry
       RIBTable[RIBTableFillIndex].tag = tagMasked;
-      //RIBTable[RIBTableFillIndex].size = 0;
-      //RIBTable[RIBTableFillIndex].type = true; // default to unconditional jump
-      //RIBTable[RIBTableFillIndex].LRUHistory = 0;
-      cout << "RIB: " << RIBTableFillIndex << " " << RIB_TABLE_SIZE << " " << sizeof(RIBTable) / sizeof(RIBTable[0]) << endl;
+      RIBTable[RIBTableFillIndex].size = 0;
+      RIBTable[RIBTableFillIndex].type = true; // default to unconditional jump
+      RIBTable[RIBTableFillIndex].LRUHistory = 0;
+      
       RIBTableFillIndex++;
-    }
-    /*
+    }    
     else if (hasEntry == false)
     {
       // if the table does not have the space to fill in the new entry
@@ -370,7 +369,7 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
       RIBTable[index].type = true; // default to unconditional jump
       RIBTable[index].LRUHistory = 0;
     }
-    */
+    
     if (recordSpatialPrints)
     {
         // if just start recording spatial footprints
@@ -382,8 +381,7 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
 
     // toggle flag that indicates the recording of spatial footprints
     recordSpatialPrints = !recordSpatialPrints;
-  }
-  /*
+  }  
   else if (branch_type == BRANCH_CONDITIONAL)
   {
     // conditional branch
@@ -391,16 +389,66 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
     CBTBChanged= true;
 
     // first, check if the table has the entry
+    bool hasEntry = false;
+    for (size_t i = 0; i < CBTB_TABLE_SIZE; i++)
+    {
+      if (CBTBTable[i].tag == tagMasked)
+      {        
+        CBTBTable[i].size = 0;
+        CBTBTable[i].direction = (branch_target > ip) ? 10 : 1;
+        CBTBTable[i].target = branch_target;
+        CBTBTable[i].LRUHistory = 0;
+
+        hasEntry = true;
+
+        break;
+      }
+    }
+
+    // second, if the table does not have the entry
+    if ((CBTBTableFillIndex < CBTB_TABLE_SIZE) && (hasEntry == false))
+    {
+      // if the C-BTB table still have space for new entries
+      CBTBTable[CBTBTableFillIndex].size = 0;
+      CBTBTable[CBTBTableFillIndex].direction = (branch_target > ip) ? 10 : 1;
+      CBTBTable[CBTBTableFillIndex].target = branch_target;
+      CBTBTable[CBTBTableFillIndex].LRUHistory = 0;
+
+      CBTBTableFillIndex++;
+    }
+    else if (hasEntry == false)
+    {
+      // if the C-BTB table is already filled
+      // first, find out the oldest entry in the C-BTB table
+      uint16_t maxLURHistory = 0;
+      uint16_t index = 0;
+
+      for (size_t i = 0; i < CBTB_TABLE_SIZE; i++)
+      {
+        if (CBTBTable[i].LRUHistory > maxLURHistory)
+        {
+          maxLURHistory = CBTBTable[i].LRUHistory;
+          index = i;
+        }
+      }
+
+      // second, insert the entry at the given index
+      // overwrite the oldest entry
+      CBTBTable[index].size = 0;
+      CBTBTable[index].direction = (branch_target > ip) ? 10 : 1;
+      CBTBTable[index].target = branch_target;
+      CBTBTable[index].LRUHistory = 0;
+    }
   }
   else
   {
     // not branch
     // do nothing
-  }
-  */
+  }  
 
   // update all LRUHistory counter in all entries in the 3 BTBs
   // include U-BTB, RIB, C-BTB
+  // only if the BTB tables are changed
   if (UBTBChanged)
   {
     for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
