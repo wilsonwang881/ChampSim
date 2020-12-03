@@ -16,11 +16,20 @@
 // U-BTB table size
 #define UBTB_TABLE_SIZE 1536
 
+// U-BTB table next fill index
+uint16_t UBTBTableFillIndex = 0;
+
 // RIB table size
 #define RIB_TABLE_SIZE 512
 
+// RIB table next fill index
+uint16_t RIBTableFillIndex = 0;
+
 // C-BTB table size
 #define CBTB_TABLE_SIZE 128
+
+// C-BTB table next fill index
+uint16_t CBTBTableFillIndex = 0;
 
 // U-BTB entry definition
 struct UBTBEntry
@@ -31,6 +40,8 @@ struct UBTBEntry
   uint64_t target;          // branch target address, should be 48 bits
   uint8_t callFootPrint;    // spatial footprint for the target region of a call or unconditional jump instruction
   uint8_t returnFootPrint;  // the spatial footpring for the target region of a return a return instruction
+
+  uint16_t LRUHistory;      // indicate the time duration between now and last access time instant
 
   // Note on the footprint
   // 2 bits: track the blocks before the target block
@@ -44,7 +55,9 @@ struct RIBEntry
 {
   uint64_t tag;              // branch identity
   uint64_t size;             // size of the basic block containing the branch
-  uint8_t type;              // type of the branch, see /inc/instruction.h line 18-26
+  bool type;                 // type of the branch, see /inc/instruction.h line 18-26
+
+  uint16_t LRUHistory;       // indicate the time duration between now and last access time instant
 };
 
 // C-BTB entry definition
@@ -54,6 +67,15 @@ struct CBTBEntry
   uint64_t size;             // size of the basic block containing the branch
   bool direction;            // the direction of the branch, true = forward, false = backward
   uint64_t target;           // branch target address
+
+  uint16_t LRUHistory;       // indicate the time duration between now and last access time instant
+};
+
+// RAS entry definition
+struct RASEntry
+{
+  uint64_t returnAddress;
+  uint64_t basicBlockHeadAddress;
 };
 
 // U-BTB table definition
@@ -65,13 +87,14 @@ struct RIBEntry RIBTable[RIB_TABLE_SIZE];
 // C-BTB definition
 struct CBTBEntry CBTBTable[CBTB_TABLE_SIZE];
 
+// Return Address Stack (RAS) definition
+vector <RASEntry> RAS;
+
 // flag that indicates whether or not recording spatial footprints
 bool recordSpatialPrints = false;
 
 void O3_CPU::l1i_prefetcher_initialize() 
-{
-  cout << "CPU " << cpu << " L1I shotgun prefetcher" << endl;
-  
+{    
   // initialize U-BTB table
   for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
   {
@@ -81,6 +104,7 @@ void O3_CPU::l1i_prefetcher_initialize()
     UBTBTable[i].target = 0;
     UBTBTable[i].callFootPrint = 0;
     UBTBTable[i].returnFootPrint = 0;
+    UBTBTable[i].LRUHistory = 0;
   }
   
   // initialize RIB table
@@ -88,7 +112,8 @@ void O3_CPU::l1i_prefetcher_initialize()
   {
     RIBTable[i].tag = 0;
     RIBTable[i].size = 0;
-    RIBTable[i].type = true; // default to unconditional jump    
+    RIBTable[i].type = true; // default to unconditional jump
+    RIBTable[i].LRUHistory = 0;
   }
 
   // initialize C-BTB table
@@ -96,26 +121,95 @@ void O3_CPU::l1i_prefetcher_initialize()
   {
     CBTBTable[i].tag = 0;
     CBTBTable[i].size = 0;
-    CBTBTable[i].type = true; // default to unconditional jump
     CBTBTable[i].direction = false;
-    CBTBTable[i].target = 0;    
+    CBTBTable[i].target = 0;
+    CBTBTable[i].LRUHistory = 0;
   }
+
+  cout << "CPU " << cpu << " L1I shotgun prefetcher initialized" << endl;
 }
 
 void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uint64_t branch_target)
 {
+  // extract the tag from the ip
+  uint64_t tagMasked = ip & TAG_MASK;
+
+  bool UBTBChanged = false;
+  bool RIBChanged = false;
+  bool CBTBChanged = false;
+
   // go to inc/instruction.h line 18-26 for a complete list of the type of branches
   if ((branch_type == BRANCH_DIRECT_JUMP) ||
-      (branch_type == BRANCH_INDIRECT) ||
-      (branch_type == BRANCH_DIRECT_CALL) ||
-      (branch_type == BRANCH_INDIRECT_CALL) ||
-      (branch_type == BRANCH_OTHER))
+      (branch_type == BRANCH_INDIRECT))
   {
     // unconditional branch
     // update U-BTB
+    UBTBChanged = true;
 
-    // toggle flag that indicates the recording of spatial footprints
-    recordSpatialPrints = !recordSpatialPrints;
+    // first, check if the table has the entry
+    bool hasEntry = false;
+
+    for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+    {
+      if (UBTBTable[i].tag == tagMasked)
+      {
+        // the table has the entry
+        // update the entry
+        UBTBTable[i].tag = tagMasked;
+        UBTBTable[i].type = true;
+        UBTBTable[i].target = branch_target;
+        UBTBTable[i].callFootPrint = 0xFF;
+        UBTBTable[i].returnFootPrint = 0;
+        UBTBTable[i].LRUHistory = 0;
+
+        hasEntry = true;
+
+        break;
+      }
+    }
+
+    // if the table does not have the entry
+    // add the entry to the table
+    if ((UBTBTableFillIndex < UBTB_TABLE_SIZE) && (hasEntry == false))
+    {
+      // there is still space in the U-BTB table
+      // no need for LRU replacement
+      UBTBTable[UBTBTableFillIndex].tag = tagMasked;
+      UBTBTable[UBTBTableFillIndex].type = true;
+      UBTBTable[UBTBTableFillIndex].target = branch_target;
+      UBTBTable[UBTBTableFillIndex].callFootPrint = 0xFF;
+      UBTBTable[UBTBTableFillIndex].returnFootPrint = 0;
+      UBTBTable[UBTBTableFillIndex].LRUHistory = 0;
+      cout << "U-BTB: " << UBTBTableFillIndex << " " << UBTB_TABLE_SIZE << endl;
+      UBTBTableFillIndex++;      
+      // UBTBTable[i].size = 0; ? how to use the size?
+    }
+    else if (hasEntry == false)
+    {
+      // there is no space in the U-BTB table
+      // need to replace entries using the LRU policy
+      uint16_t maxLURHistory = 0;
+      uint16_t index = 0;
+
+      // first, find the entry with the longest LRU history
+      for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+      {
+        if (UBTBTable[i].LRUHistory > maxLURHistory)
+        {
+          maxLURHistory = UBTBTable[i].LRUHistory;
+          index = i;
+        }
+      }
+
+      // second, insert the entry at the given index
+      // overwrite the oldest entry
+      UBTBTable[index].tag = tagMasked;
+      UBTBTable[index].type = true;
+      UBTBTable[index].target = branch_target;
+      UBTBTable[index].callFootPrint = 0xFF;
+      UBTBTable[index].returnFootPrint = 0;
+      UBTBTable[index].LRUHistory = 0;
+    }
     
     if (recordSpatialPrints)
     {
@@ -125,15 +219,158 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
     {
         // if the recording stops
     }
-  }
+
+    // toggle flag that indicates the recording of spatial footprints
+    recordSpatialPrints = !recordSpatialPrints;
+  }  
+  else if ((branch_type == BRANCH_DIRECT_CALL) ||
+      (branch_type == BRANCH_INDIRECT_CALL))
+  {
+    // unconditional branch
+    // update U-BTB
+    UBTBChanged = true;
+
+    // push to RAS
+    struct RASEntry rasEntry;
+    rasEntry.returnAddress = ip + 4;
+    rasEntry.basicBlockHeadAddress = branch_target;
+    RAS.push_back(rasEntry);
+
+    // first, check if the table has the entry
+    bool hasEntry = false;
+
+    for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+    {
+      if (UBTBTable[i].tag == tagMasked)
+      {
+        // the table has the entry
+        // update the entry
+        UBTBTable[i].tag = tagMasked;
+        UBTBTable[i].type = true;
+        UBTBTable[i].target = branch_target;
+        UBTBTable[i].callFootPrint = 0xFF;
+        UBTBTable[i].returnFootPrint = 0xFF;
+        UBTBTable[i].LRUHistory = 0;
+
+        hasEntry = true;
+
+        break;
+      }
+    }
+
+    // if the table does not have the entry
+    // add the entry to the table
+    if ((UBTBTableFillIndex < UBTB_TABLE_SIZE) && (hasEntry == false))
+    {
+      // there is still space in the U-BTB table
+      // no need for LRU replacement
+      UBTBTable[UBTBTableFillIndex].tag = tagMasked;
+      UBTBTable[UBTBTableFillIndex].type = false;
+      UBTBTable[UBTBTableFillIndex].target = branch_target;
+      UBTBTable[UBTBTableFillIndex].callFootPrint = 0xFF;
+      UBTBTable[UBTBTableFillIndex].returnFootPrint = 0xFF;
+      UBTBTable[UBTBTableFillIndex].LRUHistory = 0;
+      cout << "U-BTB: " << UBTBTableFillIndex << " " << UBTB_TABLE_SIZE << endl;
+      UBTBTableFillIndex++;
+      
+      // UBTBTable[i].size = 0; ? how to use the size?
+    }
+    else if (hasEntry == false)
+    {
+      // there is no space in the U-BTB table
+      // need to replace entries using the LRU policy
+      uint16_t maxLURHistory = 0;
+      uint16_t index = 0;
+
+      // first, find the entry with the longest LRU history
+      for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+      {
+        if (UBTBTable[i].LRUHistory > maxLURHistory)
+        {
+          maxLURHistory = UBTBTable[i].LRUHistory;
+          index = i;
+        }
+      }
+
+      // second, insert the entry at the given index
+      // overwrite the oldest entry
+      UBTBTable[index].tag = tagMasked;
+      UBTBTable[index].type = true;
+      UBTBTable[index].target = branch_target;
+      UBTBTable[index].callFootPrint = 0xFF;
+      UBTBTable[index].returnFootPrint = 0xFF;
+      UBTBTable[index].LRUHistory = 0;
+    }
+  }  
   else if (branch_type == BRANCH_RETURN)
   {
     // return instruction
     // update RIB
+    RIBChanged = true;
 
-    // toggle flag that indicates the recording of spatial footprints
-    recordSpatialPrints = !recordSpatialPrints;
+    // pop RAS
+    if (RAS.size() > 0)
+    {
+      RAS.pop_back();  
+    }
     
+    // first, check if the table has the entry
+    bool hasEntry = false;
+
+    for (size_t i = 0; i < RIB_TABLE_SIZE; i++)
+    {      
+      if (RIBTable[i].tag == tagMasked)
+      {
+        // if the RIB table has the entry, update the corresponding entry
+        RIBTable[i].tag = tagMasked;
+        RIBTable[i].size = 0;
+        RIBTable[i].type = true; // default to unconditional jump
+        RIBTable[i].LRUHistory = 0;
+
+        hasEntry = true;
+
+        break;
+      }
+    }
+    
+    // second, if the table does not have the entry
+    if ((RIBTableFillIndex < RIB_TABLE_SIZE) && (hasEntry == false))
+    {      
+      // if the table still has space to fill in the new entry
+      RIBTable[RIBTableFillIndex].tag = tagMasked;
+      //RIBTable[RIBTableFillIndex].size = 0;
+      //RIBTable[RIBTableFillIndex].type = true; // default to unconditional jump
+      //RIBTable[RIBTableFillIndex].LRUHistory = 0;
+      cout << "RIB: " << RIBTableFillIndex << " " << RIB_TABLE_SIZE << " " << sizeof(RIBTable) / sizeof(RIBTable[0]) << endl;
+      RIBTableFillIndex++;
+    }
+    /*
+    else if (hasEntry == false)
+    {
+      // if the table does not have the space to fill in the new entry
+      // replace the oldest entry
+
+      // find the oldest entry first
+      uint16_t maxLURHistory = 0;
+      uint16_t index = 0;
+
+      for (size_t i = 0; i < RIB_TABLE_SIZE; i++)
+      {
+        if (RIBTable[i].LRUHistory > maxLURHistory)
+        {
+          maxLURHistory = RIBTable[i].LRUHistory;
+          index = i;
+        }
+      }
+
+      // second, insert the entry at the given index
+      // overwrite the oldest entry
+      RIBTable[index].tag = tagMasked;
+      RIBTable[index].size = 0;
+      RIBTable[index].type = true; // default to unconditional jump
+      RIBTable[index].LRUHistory = 0;
+    }
+    */
     if (recordSpatialPrints)
     {
         // if just start recording spatial footprints
@@ -142,17 +379,51 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
     {
         // if the recording stops
     }
+
+    // toggle flag that indicates the recording of spatial footprints
+    recordSpatialPrints = !recordSpatialPrints;
   }
+  /*
   else if (branch_type == BRANCH_CONDITIONAL)
   {
     // conditional branch
     // update C-BTB
+    CBTBChanged= true;
+
+    // first, check if the table has the entry
   }
   else
   {
     // not branch
     // do nothing
   }
+  */
+
+  // update all LRUHistory counter in all entries in the 3 BTBs
+  // include U-BTB, RIB, C-BTB
+  if (UBTBChanged)
+  {
+    for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+    {    
+      UBTBTable[i].LRUHistory = (UBTBTable[i].LRUHistory == 0xFFFF) ? 0xFFFF : (UBTBTable[i].LRUHistory + 1);
+    }
+  }
+  
+  if (RIBChanged)
+  {
+    for (size_t i = 0; i < RIB_TABLE_SIZE; i++)
+    {
+      RIBTable[i].LRUHistory = (RIBTable[i].LRUHistory == 0xFFFF) ? 0xFFFF : (RIBTable[i].LRUHistory + 1);
+    }
+  }
+
+  if (CBTBChanged)
+  {
+    for (size_t i = 0; i < CBTB_TABLE_SIZE; i++)
+    {
+      CBTBTable[i].LRUHistory = (CBTBTable[i].LRUHistory == 0xFFFF) ? 0xFFFF : (CBTBTable[i].LRUHistory + 1);
+    }
+  }  
 }
 
 void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, uint8_t prefetch_hit)
@@ -160,6 +431,60 @@ void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, ui
   // query all 3 BTBs in parallel
   // if hit, put into the prefetch queue
   // call prefetch_code_line
+
+  // get the tag
+  uint64_t pCTag = v_addr & TAG_MASK;
+
+  // tag matching in the U-BTB table
+  for(size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+  {
+    if (UBTBTable[i].tag == pCTag)
+    {
+      uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
+
+      // read the spatial footprint
+      // issue L1I prefetch probes
+
+      prefetch_code_line(pf_addr);
+      return;
+    }
+  }
+
+  // tag matching in the RIB table
+  for(size_t i = 0; i < RIB_TABLE_SIZE; i++)
+  {
+    if (RIBTable[i].tag == pCTag)
+    {
+      uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
+
+      // read the spatial footprint from U-BTB
+      struct RASEntry rasEntry = RAS.back();
+      uint64_t basicBlockHeadAddress = rasEntry.basicBlockHeadAddress;
+
+      // issue L1I prefetch probes
+
+      prefetch_code_line(pf_addr);
+
+      // pop the RAS vector
+      if (RAS.size() > 0)
+      {
+        RAS.pop_back();
+      }      
+
+      return;
+    }
+  }
+
+  // tag matching in the C-BTB table
+  for(size_t i = 0; i < CBTB_TABLE_SIZE; i++)
+  {
+    if (CBTBTable[i].tag == pCTag)
+    {
+      uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
+      prefetch_code_line(pf_addr);
+      return;
+    }
+  }
 }
 
 void O3_CPU::l1i_prefetcher_cycle_operate()
