@@ -1,0 +1,178 @@
+#include "ooo_cpu.h"
+#include "instruction.h"
+
+// target address size
+#define ADDRESS_SIZE 48
+
+// target address mask
+#define ADDRESS_MASK 0xFFFFFFFFFFFF
+
+// tag size
+#define TAG_SIZE 40
+
+// tag mask
+#define TAG_MASK 0xFFFFFFFFFF00
+
+// U-BTB table size
+#define UBTB_TABLE_SIZE 1536
+
+// RIB table size
+#define RIB_TABLE_SIZE 512
+
+// C-BTB table size
+#define CBTB_TABLE_SIZE 128
+
+// U-BTB entry definition
+struct UBTBEntry
+{
+  uint64_t tag;             // branch identity
+  uint8_t size;             // size of the basic block containing the branch
+  bool type;                // type of the branch, see /inc/instruction.h line 18-26, true = unconditional jump, false = call
+  uint64_t target;          // branch target address, should be 48 bits
+  uint8_t callFootPrint;    // spatial footprint for the target region of a call or unconditional jump instruction
+  uint8_t returnFootPrint;  // the spatial footpring for the target region of a return a return instruction
+
+  // Note on the footprint
+  // 2 bits: track the blocks before the target block
+  // 6 bits: track the blocks after the target block
+  // callFootPrint: its target is the call instruction PC value
+  // returnFootPrint: its target is the fallthgough instruction PC value of the preceeding call instruction
+};
+
+// RIB entry definition
+struct RIBEntry
+{
+  uint64_t tag;              // branch identity
+  uint64_t size;             // size of the basic block containing the branch
+  uint8_t type;              // type of the branch, see /inc/instruction.h line 18-26
+};
+
+// C-BTB entry definition
+struct CBTBEntry
+{
+  uint64_t tag;              // branch identity
+  uint64_t size;             // size of the basic block containing the branch
+  bool direction;            // the direction of the branch, true = forward, false = backward
+  uint64_t target;           // branch target address
+};
+
+// U-BTB table definition
+struct UBTBEntry UBTBTable[UBTB_TABLE_SIZE];
+
+// RIB table definition
+struct RIBEntry RIBTable[RIB_TABLE_SIZE];
+
+// C-BTB definition
+struct CBTBEntry CBTBTable[CBTB_TABLE_SIZE];
+
+// flag that indicates whether or not recording spatial footprints
+bool recordSpatialPrints = false;
+
+void O3_CPU::l1i_prefetcher_initialize() 
+{
+  cout << "CPU " << cpu << " L1I shotgun prefetcher" << endl;
+  
+  // initialize U-BTB table
+  for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
+  {
+    UBTBTable[i].tag = 0;
+    UBTBTable[i].size = 0;
+    UBTBTable[i].type = true; // default to unconditional jump
+    UBTBTable[i].target = 0;
+    UBTBTable[i].callFootPrint = 0;
+    UBTBTable[i].returnFootPrint = 0;
+  }
+  
+  // initialize RIB table
+  for (size_t i = 0; i < RIB_TABLE_SIZE; i++)
+  {
+    RIBTable[i].tag = 0;
+    RIBTable[i].size = 0;
+    RIBTable[i].type = true; // default to unconditional jump    
+  }
+
+  // initialize C-BTB table
+  for (size_t i = 0; i < CBTB_TABLE_SIZE; i++)
+  {
+    CBTBTable[i].tag = 0;
+    CBTBTable[i].size = 0;
+    CBTBTable[i].type = true; // default to unconditional jump
+    CBTBTable[i].direction = false;
+    CBTBTable[i].target = 0;    
+  }
+}
+
+void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uint64_t branch_target)
+{
+  // go to inc/instruction.h line 18-26 for a complete list of the type of branches
+  if ((branch_type == BRANCH_DIRECT_JUMP) ||
+      (branch_type == BRANCH_INDIRECT) ||
+      (branch_type == BRANCH_DIRECT_CALL) ||
+      (branch_type == BRANCH_INDIRECT_CALL) ||
+      (branch_type == BRANCH_OTHER))
+  {
+    // unconditional branch
+    // update U-BTB
+
+    // toggle flag that indicates the recording of spatial footprints
+    recordSpatialPrints = !recordSpatialPrints;
+    
+    if (recordSpatialPrints)
+    {
+        // if just start recording spatial footprints
+    }
+    else
+    {
+        // if the recording stops
+    }
+  }
+  else if (branch_type == BRANCH_RETURN)
+  {
+    // return instruction
+    // update RIB
+
+    // toggle flag that indicates the recording of spatial footprints
+    recordSpatialPrints = !recordSpatialPrints;
+    
+    if (recordSpatialPrints)
+    {
+        // if just start recording spatial footprints
+    }
+    else
+    {
+        // if the recording stops
+    }
+  }
+  else if (branch_type == BRANCH_CONDITIONAL)
+  {
+    // conditional branch
+    // update C-BTB
+  }
+  else
+  {
+    // not branch
+    // do nothing
+  }
+}
+
+void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, uint8_t prefetch_hit)
+{
+  // query all 3 BTBs in parallel
+  // if hit, put into the prefetch queue
+  // call prefetch_code_line
+}
+
+void O3_CPU::l1i_prefetcher_cycle_operate()
+{
+
+}
+
+void O3_CPU::l1i_prefetcher_cache_fill(uint64_t v_addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_v_addr)
+{
+
+}
+
+void O3_CPU::l1i_prefetcher_final_stats()
+{
+  cout << "CPU " << cpu << " L1I shotgun prefetcher final stats" << endl;
+}
