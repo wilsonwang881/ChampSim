@@ -8,10 +8,10 @@
 #define ADDRESS_MASK 0xFFFFFFFFFFFF
 
 // tag size
-#define TAG_SIZE 40
+#define TAG_SIZE 41
 
 // tag mask
-#define TAG_MASK 0xFFFFFFFFFF00
+#define TAG_MASK 0xFFFFFFFFFF80
 
 // U-BTB table size
 #define UBTB_TABLE_SIZE 1536
@@ -95,6 +95,8 @@ bool recordSpatialPrints = false;
 
 void O3_CPU::l1i_prefetcher_initialize() 
 {    
+  cout << "CPU " << cpu << " L1I shotgun prefetcher" << endl;
+  
   // initialize U-BTB table
   for (size_t i = 0; i < UBTB_TABLE_SIZE; i++)
   {
@@ -125,8 +127,6 @@ void O3_CPU::l1i_prefetcher_initialize()
     CBTBTable[i].target = 0;
     CBTBTable[i].LRUHistory = 0;
   }
-
-  cout << "CPU " << cpu << " L1I shotgun prefetcher initialized" << endl;
 }
 
 void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uint64_t branch_target)
@@ -476,6 +476,11 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
 
 void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, uint8_t prefetch_hit)
 {
+  if (cache_hit || (L1I.MSHR.occupancy < (L1I.MSHR.SIZE>>1)))
+  {
+    return;
+  }
+
   // query all 3 BTBs in parallel
   // if hit, put into the prefetch queue
   // call prefetch_code_line
@@ -487,13 +492,11 @@ void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, ui
   for(size_t i = 0; i < UBTB_TABLE_SIZE; i++)
   {
     if (UBTBTable[i].tag == pCTag)
-    {
-      uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
-
+    {      
       // read the spatial footprint
       // issue L1I prefetch probes
 
-      prefetch_code_line(pf_addr);
+      prefetch_code_line(pCTag);
       return;
     }
   }
@@ -502,16 +505,14 @@ void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, ui
   for(size_t i = 0; i < RIB_TABLE_SIZE; i++)
   {
     if (RIBTable[i].tag == pCTag)
-    {
-      uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
-
+    {    
       // read the spatial footprint from U-BTB
       struct RASEntry rasEntry = RAS.back();
       uint64_t basicBlockHeadAddress = rasEntry.basicBlockHeadAddress;
 
       // issue L1I prefetch probes
 
-      prefetch_code_line(pf_addr);
+      prefetch_code_line(pCTag);
 
       // pop the RAS vector
       if (RAS.size() > 0)
@@ -527,9 +528,8 @@ void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, ui
   for(size_t i = 0; i < CBTB_TABLE_SIZE; i++)
   {
     if (CBTBTable[i].tag == pCTag)
-    {
-      uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
-      prefetch_code_line(pf_addr);
+    {      
+      prefetch_code_line(pCTag);
       return;
     }
   }
@@ -547,5 +547,5 @@ void O3_CPU::l1i_prefetcher_cache_fill(uint64_t v_addr, uint32_t set, uint32_t w
 
 void O3_CPU::l1i_prefetcher_final_stats()
 {
-  cout << "CPU " << cpu << " L1I shotgun prefetcher final stats" << endl;
+  //cout << "CPU " << cpu << " L1I shotgun prefetcher final stats" << endl;
 }
