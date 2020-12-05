@@ -31,6 +31,12 @@ uint16_t RIBTableFillIndex = 0;
 // C-BTB table next fill index
 uint16_t CBTBTableFillIndex = 0;
 
+// record the number of hits in each BTB
+int UBTBCounter = 0, RIBCounter = 0, CBTBCounter = 0;
+
+// record the number of calling l1i_prefetcher_cache_fill()
+int L1I_Prefetcher_Cache_Fill_Call = 0;
+
 // U-BTB entry definition
 struct UBTBEntry
 {
@@ -131,12 +137,19 @@ void O3_CPU::l1i_prefetcher_initialize()
 
 void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uint64_t branch_target)
 {
+  // check if the branch is taken or not
+  // if not taken, no need to update BTBs
+  if (branch_target == 0)
+  {
+    return;
+  }
+
   // extract the tag from the ip
   uint64_t tagMasked = ip & TAG_MASK;
 
   bool UBTBChanged = false;
   bool RIBChanged = false;
-  bool CBTBChanged = false;
+  bool CBTBChanged = false;  
 
   // go to inc/instruction.h line 18-26 for a complete list of the type of branches
   if ((branch_type == BRANCH_DIRECT_JUMP) ||
@@ -476,27 +489,31 @@ void O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uin
 
 void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, uint8_t prefetch_hit)
 {
-  if (cache_hit) //  || !(L1I.MSHR.occupancy < (L1I.MSHR.SIZE>>1))
-  {
-    return;
-  }
-
   // query all 3 BTBs in parallel
   // if hit, put into the prefetch queue
   // call prefetch_code_line
 
   // get the tag
-  uint64_t pCTag = v_addr & TAG_MASK;
+  uint64_t pCTag = v_addr & TAG_MASK;  
 
   // tag matching in the U-BTB table
   for(size_t i = 0; i < UBTB_TABLE_SIZE; i++)
   {
     if (UBTBTable[i].tag == pCTag)
-    {      
+    {    
+      UBTBCounter++;  
       // read the spatial footprint
       // issue L1I prefetch probes
+      PACKET packet;
+      packet.address = UBTBTable[i].target;
 
-      prefetch_code_line(pCTag);
+      if (L1I.check_hit(&packet) == -1)
+      {       
+        //prefetch_code_line(UBTBTable[i].target - (1<<LOG2_BLOCK_SIZE));      
+        prefetch_code_line(UBTBTable[i].target);
+        prefetch_code_line(UBTBTable[i].target + (1<<LOG2_BLOCK_SIZE));
+      }
+      
       return;
     }
   }
@@ -506,19 +523,29 @@ void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, ui
   {
     if (RIBTable[i].tag == pCTag)
     {    
-      // read the spatial footprint from U-BTB
-      struct RASEntry rasEntry = RAS.back();
-      uint64_t basicBlockHeadAddress = rasEntry.basicBlockHeadAddress;
-
-      // issue L1I prefetch probes
-
-      prefetch_code_line(pCTag);
-
+      RIBCounter++;
       // pop the RAS vector
+
+      //cout << "RIB size: " << RAS.size() << endl;
       if (RAS.size() > 0)
       {
-        RAS.pop_back();
-      }      
+        // read the spatial footprint from U-BTB
+        struct RASEntry rasEntry = RAS.back();
+        uint64_t basicBlockHeadAddress = rasEntry.basicBlockHeadAddress;
+
+        //RAS.pop_back();
+
+        // issue L1I prefetch probes
+        PACKET packet;
+        packet.address = basicBlockHeadAddress;
+
+        if (L1I.check_hit(&packet) == -1)
+        {
+          //prefetch_code_line(basicBlockHeadAddress - (1<<LOG2_BLOCK_SIZE));  
+          prefetch_code_line(basicBlockHeadAddress);                    
+          prefetch_code_line(basicBlockHeadAddress + (1<<LOG2_BLOCK_SIZE));
+        }                
+      }       
 
       return;
     }
@@ -528,11 +555,30 @@ void O3_CPU::l1i_prefetcher_cache_operate(uint64_t v_addr, uint8_t cache_hit, ui
   for(size_t i = 0; i < CBTB_TABLE_SIZE; i++)
   {
     if (CBTBTable[i].tag == pCTag)
-    {      
-      prefetch_code_line(pCTag);
+    {
+      CBTBCounter++;
+      // read the spatial footprint
+      // issue L1I prefetch probes
+      PACKET packet;
+      packet.address = UBTBTable[i].target;
+
+      if (L1I.check_hit(&packet) == -1)
+      {    
+        //prefetch_code_line(CBTBTable[i].target - (1<<LOG2_BLOCK_SIZE));  
+        prefetch_code_line(CBTBTable[i].target);                    
+        prefetch_code_line(CBTBTable[i].target + (1<<LOG2_BLOCK_SIZE));
+      }
+      
       return;
     }
   }
+
+  // if U-BTB, RIB, and C-BTB miss
+  if((cache_hit == 0) && (L1I.MSHR.occupancy < (L1I.MSHR.SIZE>>1)))
+  {
+    uint64_t pf_addr = v_addr + (1<<LOG2_BLOCK_SIZE);
+    prefetch_code_line(pf_addr);
+  }  
 }
 
 void O3_CPU::l1i_prefetcher_cycle_operate()
@@ -542,10 +588,14 @@ void O3_CPU::l1i_prefetcher_cycle_operate()
 
 void O3_CPU::l1i_prefetcher_cache_fill(uint64_t v_addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_v_addr)
 {
-
+  L1I_Prefetcher_Cache_Fill_Call++;  
 }
 
 void O3_CPU::l1i_prefetcher_final_stats()
 {
-  //cout << "CPU " << cpu << " L1I shotgun prefetcher final stats" << endl;
+  cout << "CPU " << cpu << " L1I shotgun prefetcher final stats" << endl;
+  cout << "U-BTB hit: " << UBTBCounter << endl;
+  cout << "RIB hit: " << RIBCounter << endl;
+  cout << "C-BTB hit: " << CBTBCounter << endl;
+  cout << "l1i_prefetcher_cache_fill call: " << L1I_Prefetcher_Cache_Fill_Call << endl;
 }
